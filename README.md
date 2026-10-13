@@ -7,7 +7,8 @@ It runs the real game. The Android build's C++ was decompiled and ported
 class by class, and its art, sound and maps are converted from the APK. It
 is not a remake.
 
-The game's art, sound and maps are not in this repository. To build the port
+The game's art, sound and maps are not in this repository, apart from the
+HOME Menu icon, banner and banner sound made from them. To build the port
 yourself you need your own copy of the Android game; see
 [Getting the assets](#getting-the-assets).
 
@@ -127,8 +128,11 @@ and back to the HOME Menu when it ends.
    `8005c00823422574c0951d84b1d3a1ce97992b698e38c5feb7bb2173d8cc67a0`.
    Other versions may differ.
 
-   A split install keeps the game's `assets/` in `base.apk`, which is all
-   the build needs.
+   - A split install keeps the game's `assets/` in `base.apk`, which is all
+     the build needs.
+   - The reverse-engineering tools also read
+     `lib/armeabi-v7a/libZombieOutbreakSimulator.so`. A split install keeps
+     that in its own `split_config.armeabi_v7a.apk`.
 
 2. **Convert the data** into `out/ZombieOutbreakSim/`:
 
@@ -139,11 +143,12 @@ and back to the HOME Menu when it ends.
    - The first run takes about 20 minutes and writes about 126 MB. Later
      runs only redo what changed.
    - The textures become `.t3x`, the sounds `.wav`, and the font `.bcfnt`.
+     [docs/data.md](docs/data.md) says what is converted, and why.
    - `--azahar` also copies the result onto the Azahar emulator's SD card.
 
-3. **The HOME Menu icon, banner and banner sound** are made from the game
-   too, into `3DS Files/meta`. The build script makes them when they are
-   missing. To remake them:
+3. **The HOME Menu icon, banner and banner sound** are already in
+   `3DS Files/meta`, made from the game's launcher icon, its home screen's
+   logo and one of its zombie moans. To remake them from your APK:
 
    ```bash
    python tools/make_meta.py
@@ -244,17 +249,25 @@ The port has three layers:
 1. **The game logic,** ported from the decompilation as faithfully as
    possible: `Simulation`, `PersonType`, `ZombieWave`, `GameOptions`, the
    collision layers, the bombs, the soldiers and the helicopters. Where the
-   game kept data in tables (person types, maps, credits), that source was
-   generated from the `.so` itself.
+   game kept data in tables (person types, maps, credits), `tools/gen_*.py`
+   generate the port's source from the `.so` itself.
 2. **A small cocos2d-x subset** on the port's own citro3d renderer, so the
    game's scene and UI classes port with few changes.
 3. **The 3DS platform:** streaming the map tiles, touch and buttons, ndsp
    audio, the data in RomFS or on the card, HTTPS (libcurl and Mbed TLS),
    and the top screen.
 
+The decompilation needed some setup:
+- Android's armeabi-v7a passes floats in core registers (softfp), and
+  `tools/ghidra_scripts/UseSoftFloatABI.java` tells Ghidra so.
+- `tools/vtables.py` and `tools/signatures.py` recover the virtual calls and
+  the methods' real signatures.
+
 Comments in the source name the game's code each part was ported from, as
 `decomp/classes/<Class>.c` and Ghidra's addresses. The decompilation itself is
-not in this repository.
+not in this repository: the
+[reverse-engineering tools](#reverse-engineering-tools) make it from your own
+copy of the game.
 
 ## Repository layout
 
@@ -265,16 +278,52 @@ not in this repository.
 | `3DS Files/source/game/` | The game's classes, one file per class, plus the port's (player maps, satellite tiles, top screen) |
 | `3DS Files/source/gfx/` | The citro3d renderer and its shaders |
 | `3DS Files/source/net/` | HTTPS and a JPEG reader for the satellite tiles |
-| `3DS Files/meta/` | `app.rsf` (the CIA's settings) |
-| `tools/` | The asset pipeline (`prepare_data.py`, `make_meta.py`, `banner_sound.py`, `apk.py`), the build script, the `.3dsx` check and the Azahar runner |
+| `3DS Files/meta/` | `app.rsf` (the CIA's settings), the icon, the banner and the banner sound |
+| `tools/` | The asset pipeline (`prepare_data.py`, `make_meta.py`, `banner_sound.py`, `apk.py`), the build script, the `.3dsx` check, the Azahar runner and the reverse-engineering tools |
+| `tools/ghidra_scripts/` | The Ghidra scripts that `tools/ghidra.py` runs |
+| `docs/` | The data and its file formats |
 
 These are made locally and are not in git:
 - `APK and Source/` (your APK);
 - `extracted/` (the APK unzipped);
 - `out/` (the converted data);
+- `decomp/` (the decompilation, made by the reverse-engineering tools);
 - `tools/3ds-bin/` (makerom and bannertool);
-- the icon, banner and banner sound in `3DS Files/meta/`;
 - the build's output.
+
+## Reverse-engineering tools
+
+You don't need these to build the port; they are for working on it.
+
+**Ghidra setup:**
+
+1. Install [Ghidra](https://ghidra-sre.org/).
+   - `tools/ghidra.py` looks for it in `GHIDRA_HOME`, or by default in a
+     folder `ghidra` beside this repository.
+   - It looks for projects in `GHIDRA_PROJECTS`, or by default in a folder
+     `GhidraProjects` beside this repository.
+2. In that projects folder, make a project named `ZombieOutbreakSim`. Import
+   the APK's `lib/armeabi-v7a/libZombieOutbreakSimulator.so`, keep Ghidra's
+   default image base (0x10000), and let it analyse.
+3. Set the calling convention:
+
+   ```bash
+   python tools/ghidra.py run UseSoftFloatABI.java --write
+   ```
+
+| Tool | What it does |
+| --- | --- |
+| `tools/list_game_classes.py` | Lists the game's own classes from the `.so`'s symbols (`decomp/classes.txt`) |
+| `tools/ghidra.py export` | Decompiles those classes into `decomp/classes/` |
+| `tools/ghidra.py decompile NAME...` | Decompiles single functions, by name or address |
+| `tools/ghidra.py collect`, `tools/layouts.py` | Collect every field access to the game's classes, and summarise it per class |
+| `tools/ghidra.py functions`, `tools/signatures.py` | Recover static vs. instance methods and their return types |
+| `tools/vtables.py` | The vtables and base classes, from the `.so`'s RTTI |
+| `tools/sodata.py` | Reads strings, words and floats at a Ghidra address |
+| `tools/disasm.py` | Disassembles at an address or symbol |
+| `tools/collision.py` | Draws a map's collision layer over its image |
+| `tools/gen_persontypes.py`, `gen_mapconfigs.py`, `gen_credits.py` | Generate the port's tables from the game's code |
+| `tools/check_3dsx.py` | Rejects a `.3dsx` that Azahar's loader would refuse (the build runs it) |
 
 ## Credits
 
@@ -288,8 +337,9 @@ These are made locally and are not in git:
 - **Libraries:** libctru and citro3d (devkitPro, zlib licence), libcurl (curl
   licence), Mbed TLS (Apache License 2.0) and zlib.
 
-The game's art, sound and maps, and the data `tools/prepare_data.py` makes
-from them, belong to Binary Space.
+The game's art, sound and maps, the data `tools/prepare_data.py` makes from
+them, and the icon, banner and banner sound in `3DS Files/meta`, belong to
+Binary Space.
 
 ## License
 

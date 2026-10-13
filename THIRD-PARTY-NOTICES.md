@@ -11,8 +11,12 @@ text belong to Binary Space, and so do the game logic and data tables this
 port reproduces from it. No rights to any of them are granted here. This is
 an unofficial fan port, not made or endorsed by Binary Space or Nintendo.
 
-The repository holds none of the game's art, sound or maps.
-`tools/prepare_data.py` makes them from your own copy of the APK.
+Of the game's art and sound, the repository holds only the HOME Menu's
+icon, banner and banner sound in `3DS Files/meta`. They are made from the
+game's launcher icon, its home screen's logo and one of its zombie moans
+(`tools/make_meta.py`, `tools/banner_sound.py`). It holds none of the game's
+maps or code: `tools/prepare_data.py` makes the data from your own copy of
+the APK, and the reverse-engineering tools make the decompilation from it.
 
 ## Libraries in the build
 
@@ -52,3 +56,5 @@ These tools build and package the port. They are not in this repository.
 - [bannertool](https://github.com/Epicpkmn11/bannertool) (MIT License).
 - devkitPro's devkitARM (whose C and C++ runtime is linked into the build),
   tex3ds, mkbcfnt and picasso.
+- [Ghidra](https://ghidra-sre.org/) (Apache License 2.0), which only the
+  reverse-engineering tools use.

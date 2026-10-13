@@ -31,27 +31,10 @@ Thumbs.db
 # makerom.exe and bannertool.exe (the README says where to get them)
 /tools/3ds-bin/
 
-# The HOME Menu's icon, banner and banner sound, made from the APK by
-# tools/make_meta.py and tools/banner_sound.py
-/3DS Files/meta/icon.png
-/3DS Files/meta/banner.png
-/3DS Files/meta/banner_sound.wav
-
-# Kept locally, not published: notes, the decompilation and its tools
+# Kept locally, not published: notes, crash dumps, and the decompilation
+# the reverse-engineering tools make from your own copy of the game
 /HANDOFF.md
 /CONTINUE.md
 /TASKS.md
-/docs/
+/docs/crashes/
 /decomp/
-/tools/ghidra_scripts/
-/tools/ghidra.py
-/tools/collision.py
-/tools/disasm.py
-/tools/gen_credits.py
-/tools/gen_mapconfigs.py
-/tools/gen_persontypes.py
-/tools/layouts.py
-/tools/list_game_classes.py
-/tools/signatures.py
-/tools/sodata.py
-/tools/vtables.py
