@@ -337,6 +337,8 @@ You don't need these to build the port; they are for working on it.
 - **Libraries:** libctru and citro3d (devkitPro, zlib licence), libcurl (curl
   licence), Mbed TLS (Apache License 2.0) and zlib.
 
+Claude was used to help make this decompilation possible. Specifically, I gave it the APK and it decompiled the game in full, converted it over to 3DS in C++ and I did debugging along with Claude using Azahar, and I did live hardware testing by myself on my New Nintendo 3DS XL. I also did minor Old 3DS testing by tweaking Azahar's settings however otherwise it does not have Old 3DS testing.
+
 The game's art, sound and maps, the data `tools/prepare_data.py` makes from
 them, and the icon, banner and banner sound in `3DS Files/meta`, belong to
 Binary Space.
