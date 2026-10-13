@@ -1,4 +1,5 @@
-# Builds 3DS Files/ZOS-3DS.cia (.elf/.3dsx/.smdh too).
+# Builds 3DS Files/ZOS-3DS.cia (and the .3dsx and .smdh). The .elf the link
+# makes is deleted once they are made: no build leaves one behind.
 #
 # Why this script exists: the project's path contains spaces ("3DS Files",
 # and often the folders above it), and devkitPro's Makefile template can't be
@@ -172,7 +173,9 @@ finally {
     & subst.exe $driveLetter /D
 }
 
+$elf = Join-Path $projectDir "ZOS-3DS.elf"
 if ($buildExit -ne 0) {
+    Remove-Item $elf -ErrorAction SilentlyContinue
     throw "make cia failed (exit $buildExit)"
 }
 
@@ -188,6 +191,11 @@ if (Test-Path $cia) {
 # tools/check_3dsx.py. It is checked here so the build says so first.
 $threedsx = Join-Path $projectDir "ZOS-3DS.3dsx"
 & python (Join-Path $PSScriptRoot "check_3dsx.py") $threedsx
-if ($LASTEXITCODE -ne 0) {
+$checkExit = $LASTEXITCODE
+
+# The .elf was only for makerom and for naming a symbol in the check above.
+Remove-Item $elf -ErrorAction SilentlyContinue
+
+if ($checkExit -ne 0) {
     throw "check_3dsx: $threedsx would not load"
 }
