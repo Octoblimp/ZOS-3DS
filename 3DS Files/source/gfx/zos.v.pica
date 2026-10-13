@@ -1,0 +1,47 @@
+; The port's one vertex shader.
+;
+; The game has nine GLSL programs (assets/shaders/), and every one of them
+; passes its position straight through and either samples a texture, scales
+; it by an alpha (Person, PersonShadow, EffectAlphaMult), or outputs a fixed
+; colour (BoundaryLine, ExteriorFill, PersonMarker). With the alpha and the
+; fixed colour carried per vertex, that is a single vertex format and three
+; texenv setups (gfx.cpp).
+;
+; uvxform maps the texture coordinates the code works in -- image space,
+; (0, 0) at the image's top left and (1, 1) at its bottom right, as GL had
+; them -- onto the texture as it sits in memory: a .t3x or a texture made by
+; gfx::createTexture keeps its rows bottom up and may be padded to a power
+; of two. uv * uvxform.xy + uvxform.zw.
+
+.fvec projection[4]
+.fvec uvxform
+
+.constf consts(1.0, 0.0, 0.00392156862745, 0.5)
+
+.out outpos position
+.out outtc0 texcoord0
+.out outclr color
+
+.alias inpos v0
+.alias intc0 v1
+.alias inclr v2
+
+.proc main
+	mov r0.xy, inpos
+	mov r0.z, consts.wwww
+	mov r0.w, consts.xxxx
+
+	dp4 outpos.x, projection[0], r0
+	dp4 outpos.y, projection[1], r0
+	dp4 outpos.z, projection[2], r0
+	dp4 outpos.w, projection[3], r0
+
+	mul r1.xy, uvxform, intc0
+	add r1.xy, uvxform.zwzw, r1
+	mov r1.zw, consts.yyyy
+	mov outtc0, r1
+
+	; The colour arrives as four unsigned bytes.
+	mul outclr, consts.zzzz, inclr
+	end
+.end
