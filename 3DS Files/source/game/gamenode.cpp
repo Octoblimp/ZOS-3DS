@@ -15,11 +15,13 @@
 #include "game/gestureutils.h"
 #include "game/guiglobals.h"
 #include "game/maprenderer.h"
+#include "game/playermaps.h"
 #include "game/prefs.h"
 #include "game/satellitetileloader.h"
 #include "game/simulationrenderer.h"
 #include "game/utils.h"
 #include "net/http.h"
+#include "paths.h"
 
 using namespace cocos2d;
 
@@ -56,6 +58,17 @@ MapRenderer::MapType rendererMapType(MapConfig::MapType type)
         return MapRenderer::MapType::Online;
     }
     throw std::runtime_error("Invalid map type");
+}
+
+// An online map's imagery pack: a player map's beside its walls, a featured
+// map's in the cache.
+std::string imageryPackPath(const MapConfig& config)
+{
+    if (config.type == MapConfig::MapType::Player)
+        return PlayerMaps::packPath(config.id);
+    char path[64];
+    snprintf(path, sizeof(path), ZOS_DATA_ROOT "/cache/maps/featured%d.tiles", config.id);
+    return path;
 }
 
 } // namespace
@@ -156,6 +169,23 @@ void GameNode::draw(Renderer* renderer, const Mat4& transform, u32 flags)
     _exteriorRenderer->render((float)_viewX, (float)_viewY, _mapScale, transform);
     if (_messageLabel->isVisible() && _messageTime + 5000 < _stats.gameTime)
         _messageLabel->setVisible(false);
+}
+
+void GameNode::onEnter()
+{
+    Node::onEnter();
+    // The port's: the scene GameNode leaves cleans it up as its child, which
+    // unschedules its update (the buttons) for good; the next scene's must
+    // have it back.
+    scheduleUpdate();
+}
+
+void GameNode::applicationDidEnterBackground()
+{
+    saveSimulation();
+    // What the online map's download has gathered, onto the card too.
+    if (isCurrentGoogleMap())
+        SatelliteTileLoader::getInstance()->flushMap();
 }
 
 void GameNode::update(float dt)
@@ -259,6 +289,8 @@ void GameNode::startMap(const MapConfig* config, bool tutorialMode)
     }
     _mapConfig = config;
     _tutorialMode = tutorialMode;
+    // (A menu left open when the last map was left turned them off.)
+    _controlsEnabled = true;
     // Half size, centred on the map's start.
     _mapScale = 0.5f;
     _viewX = (double)((float)config->startX + (_screen.width / _density) * -2.0f * 0.5f);
@@ -290,11 +322,14 @@ void GameNode::setupMap()
         _gameOptions.removeUnavailableValues();
     _exteriorRenderer->setupMap(config->width, config->height);
     _mapRenderer->setupMap(rendererMapType(config->type), config->id, config->width, config->height);
-    // The port's: an online map's imagery downloads whole, behind what is on
-    // screen, so it plays offline afterwards. (Past its edges ExteriorRenderer
-    // draws black.)
+    // The port's: an online map's imagery is kept in its pack, and what the
+    // pack lacks downloads behind what is on screen, so it plays offline
+    // afterwards. (A player map's came whole when it was made. Past its
+    // edges ExteriorRenderer draws black.)
     if (rendererMapType(config->type) == MapRenderer::MapType::Online) {
-        SatelliteTileLoader::getInstance()->prefetch(config->worldX, config->worldY, config->width, config->height);
+        SatelliteTileLoader* loader = SatelliteTileLoader::getInstance();
+        loader->openMap(imageryPackPath(*config), config->worldX, config->worldY, config->width, config->height);
+        loader->prefetchMap(true);
     }
     // (The game's leaked the last map's when a map started without stopMap;
     // the simulation has its own copy.)
@@ -321,6 +356,9 @@ void GameNode::restartSimulation()
 
 void GameNode::stopMap()
 {
+    // The online map's download stops; its pack is written out behind.
+    if (isCurrentGoogleMap())
+        SatelliteTileLoader::getInstance()->closeMap();
     _mapConfig = nullptr;
     delete _collisionLayer;
     _collisionLayer = nullptr;

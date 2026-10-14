@@ -24,9 +24,12 @@ public:
 
     // Made on the main thread.
     static PlaceSearch* getInstance();
+    // For the app's exit, if it was ever made: stops the search and waits a
+    // while for its thread. False if it is still in the network.
+    static bool shutdown();
 
     void start(const std::string& query);
-    // Forgets the search under way, if any.
+    // Forgets the search under way, if any; its request is abandoned.
     void cancel();
     // On the main thread: the search's state; Done gives the place, Failed
     // the reason, once each (the state is Idle after).
@@ -37,6 +40,8 @@ private:
     PlaceSearch();
     static void threadMain(void* arg);
     void run();
+    // curl's progress: false once the search is cancelled or replaced.
+    static bool keepGoing(void* user, size_t now, size_t total);
     // The first answer of Nominatim's JSON (jsonv2) into place. False if
     // there is none.
     static bool parse(const std::string& json, Place& place);
@@ -45,7 +50,9 @@ private:
     CondVar _cond;
     Thread _thread = nullptr;
     int _generation = 0;       // a search's, bumped by start and cancel
+    int _jobGeneration = 0;    // the thread's search's
     bool _pending = false;
+    bool _quit = false;
     std::string _query;        // the main thread's last
     std::string _job;          // the thread's
     State _state = State::Idle;

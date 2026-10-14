@@ -151,9 +151,15 @@ Stream* findStream(int soundId)
 
 // The music streams off the card: kMusicBuffers buffers of kMusicFrames
 // frames go round on channel 0, refilled by a thread as the DSP finishes
-// each. 4 x 8192 frames at 44.1 kHz is 0.74 s queued.
-const int kMusicBuffers = 4;
-const u32 kMusicFrames = 8192;
+// each. 8 x 16384 frames at 44.1 kHz is 3 s queued (512 KB of linear
+// memory): the card can be busy that long (the imagery's writes, the HOME
+// Menu's) without a gap. 1.0.0's 0.74 s was not enough.
+const int kMusicBuffers = 8;
+const u32 kMusicFrames = 16384;
+// Queued by musicStart itself, on the caller's (the main) thread: the rest
+// are the music thread's, within its next pass, so a start costs a frame
+// no more than one read.
+const int kMusicStartBuffers = 1;
 
 struct Music {
     LightLock lock;
@@ -238,7 +244,8 @@ void musicClose()
     m.paused = false;
 }
 
-// Opens path and queues every buffer, from the start. With the lock held.
+// Opens path and queues its first buffer, from the start; the music thread
+// queues the rest. With the lock held.
 bool musicStart(const std::string& path)
 {
     Music& m = s_music;
@@ -248,7 +255,9 @@ bool musicStart(const std::string& path)
         dbg("audio: no music %s", path.c_str());
         return false;
     }
-    setvbuf(m.file, nullptr, _IOFBF, 32 * 1024);
+    // Each read is a whole buffer: one request to the card, not stdio's
+    // pieces.
+    setvbuf(m.file, nullptr, _IONBF, 0);
     if (!readWavHeader(m.file, m.info)) {
         dbg("audio: bad music %s", path.c_str());
         fclose(m.file);
@@ -263,7 +272,7 @@ bool musicStart(const std::string& path)
     ndspChnSetRate(kMusicChannel, (float)m.info.rate);
     ndspChnSetFormat(kMusicChannel, m.info.channels == 2 ? NDSP_FORMAT_STEREO_PCM16 : NDSP_FORMAT_MONO_PCM16);
     setChannelVolume(kMusicChannel, m.volume);
-    for (int i = 0; i < kMusicBuffers; i++)
+    for (int i = 0; i < kMusicStartBuffers; i++)
         if (!musicQueue(i))
             break;
     m.playing = true;

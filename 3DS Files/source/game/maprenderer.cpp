@@ -9,6 +9,7 @@
 
 #include "cocos/director.h"
 #include "game/utils.h"
+#include "workers.h"
 
 using cocos2d::Mat4;
 using cocos2d::Vec2;
@@ -20,6 +21,13 @@ const char* const kImageryCredit = "Source: Esri, Vantor, Earthstar Geographics,
 // A tile that failed to download is asked for again after this many frames
 // (ten seconds).
 const int kRetryFrames = 600;
+// One the loader dropped from its queue (the view moved on), after this many
+// (half a second), rather than every frame.
+const int kCancelledRetryFrames = 30;
+// The most answers made textures in a frame (each an online tile's 128 KB
+// copied into linear memory): a burst of them waits for the next frames
+// rather than make one long.
+const int kMaxTexturesPerFrame = 4;
 } // namespace
 
 MapRenderer::TileInfo& MapRenderer::ZoomLevelInfo::getTile(int x, int y)
@@ -33,10 +41,9 @@ MapRenderer::MapRenderer(float density) : _density(density)
     LightLock_Init(&_lock);
     CondVar_Init(&_cond);
     Utils::log("Map renderer max tiles: %d", _maxTiles);
-    // Below the main thread, so a frame is never kept waiting on a file.
-    s32 prio = 0x30;
-    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
-    _thread = threadCreate(threadWrapper, this, 32 * 1024, prio + 1, -2, false);
+    // On the workers' core (workers.h), so a frame is never kept waiting on
+    // a file or a JPEG's decoding.
+    _thread = createWorkerThread(threadWrapper, this, 32 * 1024, 1);
     if (!_thread)
         throw std::runtime_error("Error creating background thread");
 }
@@ -74,11 +81,16 @@ void MapRenderer::onBackgroundThread()
         _requests.pop_front();
         LightLock_Unlock(&_lock);
 
-        // Online, a tile not on the card goes to SatelliteTileLoader, whose
-        // answer comes back through onTileDownloaded.
+        // Online, a tile not kept (the open map's pack, or memory) goes to
+        // SatelliteTileLoader, whose answer comes back through
+        // onTileDownloaded.
         if (info.type != MapType::Online) {
             loadTileData(info.type, info.path, info.zoom, info.x, info.y, info.data, info.copyrights);
         } else if (!loadCachedTile(info)) {
+            LightLock_Lock(&_lock);
+            _onlineStats.cardReads++;
+            _onlineStats.sent++;
+            LightLock_Unlock(&_lock);
             SatelliteTileLoader::Request r;
             r.zoom = info.zoom;
             r.x = info.x;
@@ -87,6 +99,10 @@ void MapRenderer::onBackgroundThread()
             r.generation = info.generation;
             SatelliteTileLoader::getInstance()->request(this, r);
             continue;
+        } else {
+            LightLock_Lock(&_lock);
+            _onlineStats.cardReads++;
+            LightLock_Unlock(&_lock);
         }
 
         LightLock_Lock(&_lock);
@@ -108,8 +124,13 @@ void MapRenderer::onTileDownloaded(SatelliteTileLoader::Answer&& answer)
     if (answer.status == SatelliteTileLoader::Status::Loaded)
         info.copyrights.push_back(kImageryCredit);
     info.retryLater = answer.status == SatelliteTileLoader::Status::Failed;
+    info.cancelled = answer.status == SatelliteTileLoader::Status::Cancelled;
     info.missing = answer.status == SatelliteTileLoader::Status::Missing;
     LightLock_Lock(&_lock);
+    if (answer.status == SatelliteTileLoader::Status::Cancelled)
+        _onlineStats.dropped++;
+    else if (answer.status == SatelliteTileLoader::Status::Loaded)
+        _onlineStats.downloaded++;
     _loaded.push_back(std::move(info));
     LightLock_Unlock(&_lock);
 }
@@ -133,7 +154,7 @@ std::string MapRenderer::tilePath(int zoom, int x, int y) const
 bool MapRenderer::loadCachedTile(TileLoadInfo& info)
 {
     info.copyrights.clear();
-    switch (SatelliteTileLoader::loadCached(info.zoom, info.x, info.y, info.pixels)) {
+    switch (SatelliteTileLoader::getInstance()->loadCached(info.zoom, info.x, info.y, info.pixels)) {
     case SatelliteTileLoader::Cached::Tile:
         info.copyrights.push_back(kImageryCredit);
         return true;
@@ -397,6 +418,7 @@ void MapRenderer::render(double x, double y, float scale, const Mat4& transform,
         return;
     const int sinceCopyright = _frame - _copyrightFrame;
     std::set<std::string> copyrights;
+    int viewReady = 0, viewTotal = 0;
 
     const int ix = (int)x, iy = (int)y;
     const float s = _density * scale;
@@ -421,13 +443,18 @@ void MapRenderer::render(double x, double y, float scale, const Mat4& transform,
         for (int tx = minX; tx <= maxX; tx++) {
             const float sx = s * (float)((double)(tileSizeX * tx - ix) - (x - (double)ix));
             TileInfo& tile = _levels[zoom].getTile(tx, ty);
+            viewTotal++;
             if (tile.texture.valid) {
+                viewReady++;
                 tile.lastRenderFrame = _frame;
                 collect(tile);
                 draw(tile, sx, sy, 0.0f, 0.0f, 1.0f, 1.0f);
                 continue;
             }
-            if (!tile.loading && _frame >= tile.retryFrame)
+            // The imagery has none better: what is drawn for it is the tile.
+            if (tile.retryFrame == INT_MAX)
+                viewReady++;
+            else if (!tile.loading && _frame >= tile.retryFrame)
                 beginAsyncLoadTileTexture(tile, zoom, tx, ty);
             // Meanwhile, the part of the nearest loaded ancestor over it.
             int ax = tx, ay = ty;
@@ -451,6 +478,9 @@ void MapRenderer::render(double x, double y, float scale, const Mat4& transform,
             }
         }
     }
+
+    _viewReady = viewReady;
+    _viewTotal = viewTotal;
 
     if (sinceCopyright >= 60) {
         std::string combined;
@@ -485,6 +515,8 @@ void MapRenderer::beginAsyncLoadTileTexture(TileInfo& tile, int zoom, int x, int
     info.type = _mapType;
     info.path = tilePath(zoom, x, y);
     LightLock_Lock(&_lock);
+    if (_mapType == MapType::Online)
+        _onlineStats.asked++;
     _requests.push_back(std::move(info));
     CondVar_Signal(&_cond);
     LightLock_Unlock(&_lock);
@@ -511,10 +543,19 @@ void MapRenderer::handleLoadedTiles()
     loaded.swap(_loaded);
     LightLock_Unlock(&_lock);
 
-    for (TileLoadInfo& info : loaded) {
+    int made = 0;
+    while (!loaded.empty()) {
+        TileLoadInfo& info = loaded.front();
         // A load asked before the last clear is for a tile that is gone.
-        if (info.generation != _generation)
+        if (info.generation != _generation) {
+            loaded.pop_front();
             continue;
+        }
+        const bool texture = !info.pixels.empty() || !info.data.empty();
+        if (texture && made >= kMaxTexturesPerFrame)
+            break;
+        if (texture)
+            made++;
         if (createTileTexture(*info.tile, info)) {
             info.tile->copyrights = std::move(info.copyrights);
             _numTilesLoaded++;
@@ -522,8 +563,21 @@ void MapRenderer::handleLoadedTiles()
             info.tile->retryFrame = INT_MAX;
         } else if (info.retryLater) {
             info.tile->retryFrame = _frame + kRetryFrames;
+        } else if (info.cancelled) {
+            info.tile->retryFrame = _frame + kCancelledRetryFrames;
         }
         info.tile->loading = false;
+        loaded.pop_front();
+    }
+    // The rest next frame, ahead of what comes meanwhile.
+    if (!loaded.empty()) {
+        LightLock_Lock(&_lock);
+        while (!_loaded.empty()) {
+            loaded.push_back(std::move(_loaded.front()));
+            _loaded.pop_front();
+        }
+        _loaded.swap(loaded);
+        LightLock_Unlock(&_lock);
     }
 }
 
@@ -548,6 +602,15 @@ void MapRenderer::clear()
     _numTilesLoaded = 0;
     _mapType = MapType::None;
     _mapId = 0;
+    _viewReady = _viewTotal = 0;
+}
+
+MapRenderer::OnlineStats MapRenderer::getOnlineStats()
+{
+    LightLock_Lock(&_lock);
+    const OnlineStats s = _onlineStats;
+    LightLock_Unlock(&_lock);
+    return s;
 }
 
 void MapRenderer::onTrimMemory()

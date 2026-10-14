@@ -38,3 +38,7 @@ Thumbs.db
 /TASKS.md
 /docs/crashes/
 /decomp/
+
+# The log and crash dumps a test run leaves (they can hold where you are)
+zos_debug*.txt
+*.dmp

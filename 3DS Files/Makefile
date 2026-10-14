@@ -40,7 +40,7 @@ APP_AUTHOR		:= Octoblimp
 # The title version, which FBI and the HOME Menu show: makerom's -ver packs
 # it as major << 10 | minor << 4 | micro.
 APP_VERSION_MAJOR	:= 1
-APP_VERSION_MINOR	:= 0
+APP_VERSION_MINOR	:= 1
 APP_VERSION_MICRO	:= 0
 
 #---------------------------------------------------------------------------------

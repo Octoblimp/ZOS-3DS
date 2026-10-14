@@ -111,6 +111,8 @@ void GUIScene::onExit()
 {
     Layer::onExit();
     _game->stopMap();
+    // (Change map leaves with the settings up, which turned them off.)
+    _game->setControlsEnabled(true);
     Director* director = Director::getInstance();
     if (director->getTopScreenNode() == _topScreen)
         director->setTopScreenNode(nullptr);

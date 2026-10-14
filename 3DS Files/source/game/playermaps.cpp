@@ -13,6 +13,7 @@
 #include "net/http.h"
 #include "net/jpeg.h"
 #include "paths.h"
+#include "workers.h"
 
 namespace {
 
@@ -46,10 +47,37 @@ std::string httpError(const char* what, int status, const std::string& error)
 
 } // namespace
 
+namespace {
+PlayerMaps* s_instance = nullptr;
+} // namespace
+
 PlayerMaps* PlayerMaps::getInstance()
 {
-    static PlayerMaps* s = new PlayerMaps();
-    return s;
+    if (!s_instance)
+        s_instance = new PlayerMaps();
+    return s_instance;
+}
+
+bool PlayerMaps::shutdown()
+{
+    PlayerMaps* m = s_instance;
+    if (!m || !m->_thread)
+        return true;
+    LightLock_Lock(&m->_lock);
+    m->_quit = true;
+    m->_generation++;
+    m->_pending = false;
+    CondVar_Broadcast(&m->_cond);
+    LightLock_Unlock(&m->_lock);
+    // A transfer stops at curl's next progress call; drawing a big map's
+    // layer takes a few seconds, and is not waited for to the end.
+    if (R_FAILED(threadJoin(m->_thread, 3000ULL * 1000 * 1000))) {
+        dbg("player maps: the builder still busy at exit");
+        return false;
+    }
+    threadFree(m->_thread);
+    m->_thread = nullptr;
+    return true;
 }
 
 PlayerMaps::PlayerMaps()
@@ -60,11 +88,9 @@ PlayerMaps::PlayerMaps()
     // The imagery's cache, and the sockets and TLS, on the main thread.
     SatelliteTileLoader::getInstance();
     loadIndex();
-    s32 prio = 0x30;
-    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
-    // Below the main thread, like the imagery's; 256 KB for mbedTLS's
-    // handshake and the builder's own.
-    _thread = threadCreate(threadMain, this, 256 * 1024, prio + 2, -2, true);
+    // On the workers' core, like the imagery's; 256 KB for mbedTLS's
+    // handshake and the builder's own. Joined at the exit.
+    _thread = createWorkerThread(threadMain, this, 256 * 1024, 2);
     if (!_thread)
         dbg("player maps: no builder thread");
 }
@@ -78,6 +104,13 @@ std::string PlayerMaps::layerPath(int id)
 {
     char buf[32];
     snprintf(buf, sizeof(buf), "/%d.cl", id);
+    return dir() + buf;
+}
+
+std::string PlayerMaps::packPath(int id)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "/%d.tiles", id);
     return dir() + buf;
 }
 
@@ -160,8 +193,10 @@ bool PlayerMaps::deleteMap(int id)
         remove(tmp.c_str());
     }
     LightLock_Unlock(&_fileLock);
-    if (ok)
+    if (ok) {
         remove(layerPath(id).c_str());
+        SatelliteTileLoader::getInstance()->removePack(packPath(id));
+    }
     dbg("player map %d deleted%s", id, ok ? "" : ", but the index could not be written");
     return ok;
 }
@@ -182,6 +217,13 @@ void PlayerMaps::build(int centreX, int centreY, int size)
         m.worldX = world - size;
     if (m.worldY > world - size)
         m.worldY = world - size;
+    closeBuildImagery();
+    // Its imagery, every level, downloading from now on, beside the builder.
+    m.id = _nextId++;
+    _imageryId = m.id;
+    SatelliteTileLoader* loader = SatelliteTileLoader::getInstance();
+    loader->openMap(packPath(m.id), m.worldX, m.worldY, m.size, m.size);
+    loader->prefetchMap(false);
     LightLock_Lock(&_lock);
     _generation++;
     _job = m;
@@ -200,6 +242,15 @@ void PlayerMaps::cancel()
     _pending = false;
     _state = State::Idle;
     LightLock_Unlock(&_lock);
+    closeBuildImagery();
+}
+
+void PlayerMaps::closeBuildImagery()
+{
+    if (_imageryId) {
+        SatelliteTileLoader::getInstance()->closeMap(true);
+        _imageryId = 0;
+    }
 }
 
 void PlayerMaps::acknowledge()
@@ -227,6 +278,12 @@ PlayerMaps::State PlayerMaps::poll(std::string& text, int& mapId)
     text = state == State::Failed ? _error : state == State::Working ? _text : std::string();
     mapId = _doneId;
     LightLock_Unlock(&_lock);
+    // A map made keeps its imagery open, to be played now; one not made has
+    // it removed.
+    if (state == State::Done && mapId == _imageryId)
+        _imageryId = 0;
+    else if (state != State::Working)
+        closeBuildImagery();
     return state;
 }
 
@@ -271,11 +328,14 @@ void PlayerMaps::run()
 {
     for (;;) {
         LightLock_Lock(&_lock);
-        while (!_pending)
+        while (!_pending && !_quit)
             CondVar_Wait(&_cond, &_lock);
+        if (_quit) {
+            LightLock_Unlock(&_lock);
+            return;
+        }
         _pending = false;
-        Map job = _job;
-        job.id = _nextId++;
+        const Map job = _job;
         const int generation = _generation;
         _jobGeneration = generation;
         LightLock_Unlock(&_lock);
@@ -283,8 +343,9 @@ void PlayerMaps::run()
         const u64 t0 = osGetTime();
         std::string error;
         const bool ok = make(generation, job, error);
-        dbg("player map %d at %d,%d size %d: %s in %d ms", job.id, job.worldX, job.worldY, job.size,
-            ok ? "made" : error.c_str(), (int)(osGetTime() - t0));
+        // (Not where: the log may be shared, and a map is often of home.)
+        dbg("player map %d, size %d: %s in %d ms", job.id, job.size,
+            ok ? "made" : error.empty() ? "cancelled" : error.c_str(), (int)(osGetTime() - t0));
 
         LightLock_Lock(&_lock);
         if (ok)
@@ -381,7 +442,8 @@ bool PlayerMaps::make(int generation, const Map& map, std::string& error)
                 char buf[48];
                 snprintf(buf, sizeof(buf), "Imagery %d/%d", ++n, numTiles);
                 setText(generation, buf);
-                SatelliteTileLoader::Status s = SatelliteTileLoader::fetchJpeg(&http, kImageryZoom, tx, ty, jpg);
+                SatelliteTileLoader::Status s =
+                    SatelliteTileLoader::getInstance()->fetchJpeg(&http, kImageryZoom, tx, ty, jpg);
                 if (cancelled(generation))
                     return false;
                 int w = 0, h = 0;
@@ -415,7 +477,25 @@ bool PlayerMaps::make(int generation, const Map& map, std::string& error)
         return false;
     }
 
-    // 4. Onto the card.
+    // 4. The rest of the imagery, which the loader's threads have been
+    // downloading meanwhile: the map then plays with nothing more to fetch.
+    // (A tile the network keeps failing is given up, and fetched in play.)
+    SatelliteTileLoader* loader = SatelliteTileLoader::getInstance();
+    for (;;) {
+        int done = 0, total = 0;
+        loader->prefetchProgress(done, total);
+        if (done >= total)
+            break;
+        char buf[48];
+        snprintf(buf, sizeof(buf), "Imagery %d%%", done * 100 / total);
+        setText(generation, buf);
+        if (cancelled(generation))
+            return false;
+        svcSleepThread(100 * 1000 * 1000);
+    }
+    loader->flushMap();
+
+    // 5. Onto the card.
     setText(generation, "Saving");
     if (cancelled(generation))
         return false;

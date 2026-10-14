@@ -14,7 +14,7 @@
 
 namespace net {
 
-const char* const kUserAgent = "ZombieOutbreakSim-3DS/1.0 (Nintendo 3DS homebrew port of Zombie Outbreak Simulator)";
+const char* const kUserAgent = "ZombieOutbreakSim-3DS/1.1 (Nintendo 3DS homebrew port of Zombie Outbreak Simulator)";
 
 namespace {
 
@@ -30,6 +30,8 @@ bool s_ac = false;
 bool s_sslc = false;
 u32* s_socBuffer = nullptr;
 bool s_haveCaBundle = false;
+// Connections made (each a TLS handshake), for the log.
+volatile int s_connections = 0;
 
 struct Transfer {
     std::vector<u8>* body;
@@ -130,6 +132,11 @@ void exit()
     LightLock_Unlock(&s_lock);
 }
 
+int connectionsMade()
+{
+    return __atomic_load_n(&s_connections, __ATOMIC_RELAXED);
+}
+
 bool wifiConnected()
 {
     if (!s_ac)
@@ -205,6 +212,9 @@ int HttpClient::perform(const std::string& url, const std::string* form, std::ve
         curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, (long)form->size());
     }
     CURLcode rc = curl_easy_perform(c);
+    long connects = 0;
+    if (curl_easy_getinfo(c, CURLINFO_NUM_CONNECTS, &connects) == CURLE_OK && connects > 0)
+        __atomic_add_fetch(&s_connections, (int)connects, __ATOMIC_RELAXED);
     if (rc != CURLE_OK) {
         if (t.overflowed)
             error = "the answer was too big";

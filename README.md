@@ -21,12 +21,15 @@ yourself you need your own copy of the Android game; see
 - **The stats on the top screen:** the counters, the population graph and a
   minimap.
 - **The 15 online city maps** with satellite imagery from Esri World Imagery.
-  A map downloads whole when it starts and is then kept on the SD card.
+  A map downloads whole in the background the first time it is played, and
+  is then kept on the SD card.
 - **Player maps of anywhere.** The game's own map server is gone, so the port
   makes them on the 3DS:
   - browse the imagery, press New map and place the square;
   - the collision (buildings, roads, water) comes from OpenStreetMap;
+  - the map's imagery downloads with it, so it plays without the network;
   - Search (X) finds a place by name.
+  The top screen shows how much of the imagery in view has loaded.
 - **Saving:** the game saves on START, HOME and sleep, and goes back to the
   saved game the next time it starts.
 - **Positional sound (optional):** SELECT pans each sound effect towards
@@ -70,8 +73,15 @@ installer) or the Homebrew Launcher.
    that they are on the card.
 
 What the game writes to the SD card:
-- saves and map caches in `sdmc:/ZombieOutbreakSim/` (it makes the folder);
+- saves and map imagery in `sdmc:/ZombieOutbreakSim/` (it makes the folder);
 - its log in `sdmc:/zos_debug.txt`.
+
+Updating from 1.0.0: install the new CIA over the old one; saves and player
+maps carry over. 1.0.0 kept its imagery as one small file per tile in
+`sdmc:/ZombieOutbreakSim/cache/imagery/`. 1.1.0 keeps one file per map, and
+copies a map's tiles across from the old folder the first time the map is
+opened. Once you have opened your maps, you can delete the old folder from a
+PC to free the space; it is optional.
 
 On a New 3DS, the system restarts into the 178 MB mode when the game starts
 and back to the HOME Menu when it ends.
@@ -255,7 +265,11 @@ The port has three layers:
    game's scene and UI classes port with few changes.
 3. **The 3DS platform:** streaming the map tiles, touch and buttons, ndsp
    audio, the data in RomFS or on the card, HTTPS (libcurl and Mbed TLS),
-   and the top screen.
+   and the top screen. The downloads, the tile decoding and the player
+   maps' builder run on a CPU core of their own (the New 3DS's core 2, or a
+   share of core 1 on an Old 3DS), so they never cost the game a frame. Each
+   online map's imagery is one pack file, written half a megabyte at a time
+   (`source/game/tilepack.h`).
 
 The decompilation needed some setup:
 - Android's armeabi-v7a passes floats in core registers (softfp), and

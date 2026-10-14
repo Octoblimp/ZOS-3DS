@@ -12,9 +12,9 @@
 // allocator, which every texture comes from, has no lock.
 //
 // Online, the tiles are satellite imagery (SatelliteTileLoader, Esri's in
-// place of Google's): the thread reads one off the card's cache if it is
-// there, and otherwise asks SatelliteTileLoader to download it, whose answer
-// comes back to the same queue. They arrive as RGB565 (128 KB, against an
+// place of Google's): the thread takes one the loader keeps (the open map's
+// pack, or memory) if it is there, and otherwise asks SatelliteTileLoader to
+// download it, whose answer comes back to the same queue. They arrive as RGB565 (128 KB, against an
 // ETC1 tile's 32 KB), so fewer are kept. A tile the imagery lacks (zoom 20
 // in many places) is drawn from its ancestor, as one still loading is.
 //
@@ -74,10 +74,28 @@ public:
     int getNumTilesLoaded() const { return _numTilesLoaded; }
     // Frees, next frame, every tile not drawn for 60 frames.
     void onTrimMemory();
+    // The port's: of the tiles the last render wanted in view, how many it
+    // drew (a tile the imagery lacks counts, drawn from its ancestor), for
+    // the loading line on the top screen.
+    void getViewProgress(int& ready, int& total) const
+    {
+        ready = _viewReady;
+        total = _viewTotal;
+    }
     // The copyright lines of the tiles drawn, joined by ", ", updated once a
     // second. Reading it clears the updated flag.
     const std::string& getRenderedTilesCombinedCopyright();
     bool getRenderedTilesCombinedCopyrightUpdated() const { return _copyrightUpdated; }
+
+    // For the log: the online tiles' traffic since the start.
+    struct OnlineStats {
+        int asked = 0;      // loads render asked of the background thread
+        int cardReads = 0;  // of them, looked for among the kept tiles
+        int sent = 0;       // not there: sent to SatelliteTileLoader
+        int dropped = 0;    // its answers Cancelled (dropped from its queue)
+        int downloaded = 0; // its answers Loaded
+    };
+    OnlineStats getOnlineStats();
 
 private:
     // 0x18 bytes.
@@ -114,9 +132,10 @@ private:
         std::vector<std::string> copyrights;    // 0x18
         // Online: the tile, RGB565 and tiled; empty if it did not come.
         std::vector<u16> pixels;
-        // Online: try again later (a failed download), or whenever (a
-        // request the loader dropped).
+        // Online: try again later (a failed download), or soon (a request
+        // the loader dropped).
         bool retryLater = false;
+        bool cancelled = false;
         // Online: the imagery has no such tile; never ask again.
         bool missing = false;
     };
@@ -133,8 +152,8 @@ private:
     // none.
     static bool loadTileData(MapType type, const std::string& path, int zoom, int x, int y,
                              std::vector<u8>& data, std::vector<std::string>& copyrights);
-    // On any thread: an online tile from the card's cache into info (its
-    // pixels, or missing). False if it is not there.
+    // On any thread: an online tile the loader keeps into info (its pixels,
+    // or missing). False if it is not there.
     static bool loadCachedTile(TileLoadInfo& info);
     // On the main thread: data as a tile's texture, which must be 256 x 256.
     static bool createTileTexture(gfx::Texture& out, const std::vector<u8>& data, int zoom, int x, int y);
@@ -185,4 +204,7 @@ private:
     // Whether SatelliteTileLoader has been asked anything (its answers must
     // stop before this goes).
     bool _usedOnline = false;
+    OnlineStats _onlineStats; // under _lock
+    int _viewReady = 0;
+    int _viewTotal = 0;
 };

@@ -12,9 +12,11 @@
 #include "game/homescene.h"
 #include "game/hometopscreen.h"
 #include "game/mapconfigfactory.h"
+#include "game/maprenderer.h"
 #include "game/placesearch.h"
 #include "game/playermaps.h"
 #include "game/utils.h"
+#include "net/http.h"
 
 using namespace cocos2d;
 
@@ -611,6 +613,12 @@ void MapSelectScene::initPlayerTab()
     _searchLabel->setPosition(Vec2(kTopWidth * 0.5f, statusTop - 2.0f));
     _searchLabel->setTextColor(Color4B(255, 214, 102, 255));
     _playerTop->addChild(_searchLabel, 1);
+    _loadingLabel = Label::createWithTTF(" ", GUIGlobals::kFont, 16.0f);
+    _loadingLabel->setAnchorPoint(Vec2(1.0f, 1.0f));
+    _loadingLabel->setPosition(Vec2(kTopWidth - 6.0f, kTopHeight - 6.0f));
+    _loadingLabel->setTextColor(Color4B(150, 200, 255, 255));
+    _loadingLabel->setVisible(false);
+    _playerTop->addChild(_loadingLabel, 1);
     setSearchText("");
     setPicking(false);
 }
@@ -914,6 +922,32 @@ void MapSelectScene::update(float)
     if (status != _playerStatusText) {
         _playerStatusText = status;
         _playerStatus->setString(status);
+    }
+    updateLoadingText();
+}
+
+void MapSelectScene::updateLoadingText()
+{
+    // The imagery in view: shown once it has been loading a moment (not for
+    // the odd tile at an edge as the view moves), gone when it is all there.
+    int ready = 0, total = 0;
+    _game->getMapRenderer()->getViewProgress(ready, total);
+    _loadingFrames = total > 0 && ready < total ? _loadingFrames + 1 : 0;
+    std::string text;
+    if (_loadingFrames >= 10) {
+        if (_loadingFrames % 60 == 10)
+            _loadingWifi = net::wifiConnected();
+        char buf[48];
+        if (_loadingWifi)
+            snprintf(buf, sizeof(buf), "Loading %d%%", ready * 100 / total);
+        else
+            snprintf(buf, sizeof(buf), "No Wi-Fi (%d%%)", ready * 100 / total);
+        text = buf;
+    }
+    if (text != _loadingText) {
+        _loadingText = text;
+        _loadingLabel->setString(text.empty() ? std::string(" ") : text);
+        _loadingLabel->setVisible(!text.empty());
     }
 }
 

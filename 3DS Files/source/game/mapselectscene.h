@@ -91,6 +91,8 @@ private:
     void setSearchText(const std::string& text);
     // The top screen's text for now.
     std::string playerStatus() const;
+    // The top screen's loading line, from what the preview drew last.
+    void updateLoadingText();
     bool popupShowing() const;
 
     float _panelHeight = 0.0f;                     // 0x268
@@ -155,6 +157,11 @@ private:
     // A search under way; its line: under way, the place found, or why not.
     bool _searching = false;
     cocos2d::Label* _searchLabel = nullptr;
+    // The port's: how much of the imagery in view has loaded, top right.
+    cocos2d::Label* _loadingLabel = nullptr;
+    std::string _loadingText;
+    int _loadingFrames = 0; // frames the view has been incomplete
+    bool _loadingWifi = true; // asked once a second, not each frame
     float _statusTop = 0.0f;
     float _statusBottom = 0.0f;
 };

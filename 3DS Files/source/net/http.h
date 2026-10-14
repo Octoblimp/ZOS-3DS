@@ -22,6 +22,8 @@ bool init();
 void exit();
 // Whether the console is on a Wi-Fi network now (ac's status).
 bool wifiConnected();
+// The connections made so far (each a TLS handshake; a client reuses its own).
+int connectionsMade();
 
 extern const char* const kUserAgent;
 

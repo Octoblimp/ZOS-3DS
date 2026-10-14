@@ -6,9 +6,12 @@
 // 1. asks Overpass (OpenStreetMap's query service) for the area's
 //    buildings, barriers, trees and water,
 // 2. draws them into a collision layer (osmcollision.h),
-// 3. adds the trees the imagery shows (its zoom-18 tiles, a pixel per cell,
-//    which the map's own imagery download then has already),
-// 4. and keeps the layer on the card, zlib-packed like the game's own:
+// 3. adds the trees the imagery shows (its zoom-18 tiles, a pixel per cell),
+// 4. waits for the rest of the map's imagery, every level, which
+//    SatelliteTileLoader has been downloading into the map's pack
+//    (save/playermaps/<id>.tiles) since the build began, so the map plays
+//    with nothing more to download,
+// 5. and keeps the layer on the card, zlib-packed like the game's own:
 //    save/playermaps/<id>.cl, with save/playermaps/index.txt a line
 //    "id worldX worldY size" per map.
 //
@@ -48,6 +51,11 @@ public:
 
     // Made on the main thread first (the network comes up there).
     static PlayerMaps* getInstance();
+    // For the app's exit, if it was ever made: cancels the build and waits a
+    // while for the builder to stop. False if it is still in the network.
+    static bool shutdown();
+    // A map's imagery pack.
+    static std::string packPath(int id);
 
     // The maps on the card, oldest first.
     const std::vector<Map>& getMaps() const { return _maps; }
@@ -55,13 +63,15 @@ public:
     const Map* getMap(int id) const;
     // A map's MapConfig, for GameNode::startMap (which copies it).
     void fillConfig(const Map& map, MapConfig& config) const;
-    // Off the list, its line out of the index and its layer off the card (its
-    // imagery stays in the shared cache). False if the index could not be
-    // written; it is off the list all the same.
+    // Off the list, its line out of the index, and its layer and imagery off
+    // the card. False if the index could not be written; it is off the list
+    // all the same.
     bool deleteMap(int id);
 
     // Starts making a map of size world pixels square centred on centreX,
-    // centreY (zoom-20 world pixels). Any build before is cancelled.
+    // centreY (zoom-20 world pixels). Any build before is cancelled. On the
+    // main thread, as cancel and poll: the map's imagery is the loader's open
+    // map until the build ends.
     void build(int centreX, int centreY, int size);
     // Cancels the build; the state goes back to Idle at once.
     void cancel();
@@ -93,8 +103,14 @@ private:
 
     static bool onProgress(void* user, size_t now, size_t total);
 
+    // The build's map, whose imagery is open in the loader: closed, and its
+    // pack removed, if the build does not end in a map. Main thread only.
+    void closeBuildImagery();
+
     std::vector<Map> _maps;
-    int _nextId = 1; // under _lock once the thread runs
+    int _nextId = 1;
+    int _imageryId = 0;
+    bool _quit = false; // under _lock
 
     LightLock _lock;
     // index.txt's: the builder adds to it, deleteMap rewrites it.

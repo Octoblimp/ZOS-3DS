@@ -7,6 +7,7 @@
 #include "debuglog.h"
 #include "game/satellitetileloader.h"
 #include "net/http.h"
+#include "workers.h"
 
 namespace {
 
@@ -58,10 +59,35 @@ bool stringValue(const std::string& json, const char* key, std::string& out)
 
 } // namespace
 
+namespace {
+PlaceSearch* s_instance = nullptr;
+} // namespace
+
 PlaceSearch* PlaceSearch::getInstance()
 {
-    static PlaceSearch* s = new PlaceSearch();
-    return s;
+    if (!s_instance)
+        s_instance = new PlaceSearch();
+    return s_instance;
+}
+
+bool PlaceSearch::shutdown()
+{
+    PlaceSearch* s = s_instance;
+    if (!s || !s->_thread)
+        return true;
+    LightLock_Lock(&s->_lock);
+    s->_quit = true;
+    s->_generation++;
+    s->_pending = false;
+    CondVar_Broadcast(&s->_cond);
+    LightLock_Unlock(&s->_lock);
+    if (R_FAILED(threadJoin(s->_thread, 3000ULL * 1000 * 1000))) {
+        dbg("place search: still busy at exit");
+        return false;
+    }
+    threadFree(s->_thread);
+    s->_thread = nullptr;
+    return true;
 }
 
 PlaceSearch::PlaceSearch()
@@ -70,10 +96,9 @@ PlaceSearch::PlaceSearch()
     CondVar_Init(&_cond);
     // The sockets and TLS, on the main thread.
     SatelliteTileLoader::getInstance();
-    s32 prio = 0x30;
-    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
-    // As PlayerMaps' builder: below the main thread, room for the handshake.
-    _thread = threadCreate(threadMain, this, 128 * 1024, prio + 2, -2, true);
+    // As PlayerMaps' builder: on the workers' core, room for the handshake.
+    // Joined at the exit.
+    _thread = createWorkerThread(threadMain, this, 128 * 1024, 2);
     if (!_thread)
         dbg("place search: no thread");
 }
@@ -119,18 +144,33 @@ void PlaceSearch::threadMain(void* arg)
     static_cast<PlaceSearch*>(arg)->run();
 }
 
+bool PlaceSearch::keepGoing(void* user, size_t, size_t)
+{
+    PlaceSearch* self = static_cast<PlaceSearch*>(user);
+    LightLock_Lock(&self->_lock);
+    const bool go = self->_jobGeneration == self->_generation;
+    LightLock_Unlock(&self->_lock);
+    return go;
+}
+
 void PlaceSearch::run()
 {
     net::HttpClient http;
     http.setMaxBytes(256 * 1024);
     http.setTimeout(30);
+    http.setProgress(keepGoing, this);
     for (;;) {
         LightLock_Lock(&_lock);
-        while (!_pending)
+        while (!_pending && !_quit)
             CondVar_Wait(&_cond, &_lock);
+        if (_quit) {
+            LightLock_Unlock(&_lock);
+            return;
+        }
         _pending = false;
         const std::string query = _job;
         const int generation = _generation;
+        _jobGeneration = generation;
         LightLock_Unlock(&_lock);
 
         // The best match only, its name in English where OpenStreetMap has
@@ -154,7 +194,13 @@ void PlaceSearch::run()
             snprintf(buf, sizeof(buf), "The search answered HTTP %d", status);
             error = buf;
         }
-        dbg("place search \"%s\": %s in %d ms", query.c_str(), found ? place.name.c_str() : error.c_str(),
+        // (Neither what was searched for nor what was found: the log may be
+        // shared, and a search is often for home.)
+        dbg("place search: %s in %d ms",
+            found         ? "found"
+            : status == 200 ? "nothing found"
+            : status == 0   ? "no answer"
+                            : "HTTP error",
             (int)(osGetTime() - t0));
 
         LightLock_Lock(&_lock);

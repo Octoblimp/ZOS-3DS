@@ -107,8 +107,9 @@ AccessControlInfo:
   CpuSpeed                      : 804MHz
   EnableL2Cache                 : true
   # Grants access to core2, a real dedicated extra CPU core on New3DS only
-  # (in addition to core0/core1 covered by AffinityMask above). Nothing runs
-  # there yet: the map's tile threads share core0, below the main thread.
+  # (in addition to core0/core1 covered by AffinityMask above). The port's
+  # worker threads (imagery, place search, player maps) run there
+  # (include/workers.h).
   CanAccessCore2                 : true
 
   # IORegisterMapping: the DSP's two

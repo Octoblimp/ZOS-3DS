@@ -50,6 +50,7 @@ public:
     bool init(float density, const cocos2d::Size& screen, const std::string& persistentDir);
 
     void draw(cocos2d::Renderer* renderer, const cocos2d::Mat4& transform, u32 flags) override;
+    void onEnter() override;
     // The port's: L/R zoom, circle pad and D-pad pan, while controls are on.
     void update(float dt) override;
 
@@ -114,7 +115,7 @@ public:
     void setPositionalSound(bool on);
 
     // The 3DS's: on leaving the app (HOME, sleep, quit).
-    void applicationDidEnterBackground() { saveSimulation(); }
+    void applicationDidEnterBackground();
     // state.dat: the map, the simulation, the options and the view. Removed
     // instead when there is no map or it is the tutorial.
     void saveSimulation();

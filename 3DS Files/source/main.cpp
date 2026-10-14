@@ -24,7 +24,12 @@
 #include "paths.h"
 #include "game/gamenode.h"
 #include "game/homescene.h"
+#include "game/maprenderer.h"
+#include "game/placesearch.h"
+#include "game/playermaps.h"
+#include "game/satellitetileloader.h"
 #include "game/simulation.h"
+#include "net/http.h"
 
 using namespace cocos2d;
 using CocosDenshion::SimpleAudioEngine;
@@ -35,6 +40,20 @@ using CocosDenshion::SimpleAudioEngine;
 // on hardware.
 
 namespace {
+
+// The threads that use the network, stopped before anything they use goes:
+// after the exit libctru closes the card under any thread still running, and
+// 1.0.0 crashed at power-off with a tile download still writing one. The
+// network itself goes only if they all stopped.
+void stopNetworkThreads()
+{
+    const bool tiles = SatelliteTileLoader::shutdown();
+    const bool search = PlaceSearch::shutdown();
+    const bool maps = PlayerMaps::shutdown();
+    if (tiles && search && maps)
+        net::exit();
+    dbg("network threads stopped%s", tiles && search && maps ? "" : " (not all: the network is left up)");
+}
 
 // Saving with no map up removes the save, so not while loading.
 void saveGame(GameNode* game, const char* why)
@@ -190,6 +209,8 @@ int main(int argc, char* argv[])
         const u64 t0 = osGetTime();
         bool loaded = false;
         int frames = 0;
+        MapRenderer::OnlineStats lastOnline;
+        int lastConnections = 0;
         while (director->mainLoop()) {
             const u32 down = director->buttonsDown();
             if (down & KEY_START)
@@ -215,12 +236,24 @@ int main(int argc, char* argv[])
                     "gpu %.2f; %d draws, %d vertices",
                     fp.average, fp.worst, fp.input, fp.update, fp.top, fp.bottom, fp.submit, fp.wait, fp.gpu, gs.draws,
                     gs.vertices);
+                // The satellite tiles' traffic since the last line, if any.
+                const MapRenderer::OnlineStats os = game->getMapRenderer()->getOnlineStats();
+                const int connections = net::connectionsMade();
+                if (os.asked != lastOnline.asked)
+                    dbg("imagery: %d asked, %d looked for among the kept, %d to download, %d dropped, %d downloaded; "
+                        "%d connections made",
+                        os.asked - lastOnline.asked, os.cardReads - lastOnline.cardReads, os.sent - lastOnline.sent,
+                        os.dropped - lastOnline.dropped, os.downloaded - lastOnline.downloaded,
+                        connections - lastConnections);
+                lastOnline = os;
+                lastConnections = connections;
             }
         }
     } catch (const std::exception& e) {
         dbg("game: %s", e.what());
         if (game)
             aptUnhook(&aptCookie);
+        stopNetworkThreads();
         SimpleAudioEngine::end();
         dbg_close();
         gfx::exit();
@@ -230,6 +263,7 @@ int main(int argc, char* argv[])
     dbg("left main loop");
     aptUnhook(&aptCookie);
     saveGame(game, "exit");
+    stopNetworkThreads();
 
     director->setTopScreenNode(nullptr);
     game->release();
